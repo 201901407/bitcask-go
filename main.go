@@ -5,9 +5,18 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"github.com/201901407/bitcask/store"
 )
 
 func main() {
+	kvStore := bitcask.BitcaskKVStore{}
+	err := kvStore.Init()
+	
+	if err != nil {
+		fmt.Println("Error initializing Bitcask...Quitting...")
+		os.Exit(1)
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("Welcome to Go Implementation of a simple Bitcask KV Store")
@@ -37,6 +46,11 @@ func main() {
 				continue
 			}
 			//set function
+			err = kvStore.Set(args[1],args[2])
+			if err != nil {
+				fmt.Printf("Error setting key, error:",err.Error())
+				continue
+			}
 			fmt.Printf("Set key '%s' to '%s'\n", args[1], args[2])
 
 		case "get":
@@ -45,26 +59,32 @@ func main() {
 				continue
 			}
 			//get function
-			if ok {
+			value, err := kvStore.Get(args[1])
+			if err == nil {
 				fmt.Printf("Value: %s\n", value)
 			} else {
-				fmt.Println("Key not found")
+				fmt.Println("Key not found with error:",err.Error())
 			}
 
-		case "delete":
-			if len(args) != 2 {
-				fmt.Println("Usage: delete <key>")
-				continue
-			}
-			kv.Delete(args[1])
-			fmt.Printf("Deleted key '%s'\n", args[1])
+		// case "delete":
+		// 	if len(args) != 2 {
+		// 		fmt.Println("Usage: delete <key>")
+		// 		continue
+		// 	}
+		// 	kv.Delete(args[1])
+		// 	fmt.Printf("Deleted key '%s'\n", args[1])
 
 		case "stop":
+			err = kvStore.ActiveSegment.File.Close()
+			if err != nil {
+				fmt.Println("Graceful shutdown didn't happen!!")
+				os.Exit(1)
+			}
 			fmt.Println("Exiting Bitcask KV store. Goodbye!")
 			return
 
 		default:
-			fmt.Println("Unknown command. Available commands: set, get, delete, stop")
+			fmt.Println("Unknown command. Available commands: set, get, stop")
 		}
 	}
 }
