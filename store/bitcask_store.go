@@ -245,3 +245,12 @@ func(kvStore *BitcaskKVStore) Set(key string,value string) error {
 	fmt.Printf("Successful Set operation..")
 	return nil
 }
+
+func(kvStore *BitcaskKVStore) Delete(key string) error {
+	delete(kvStore.KeysToValPointers,key)
+
+	//TODO: implement tombstone logic
+	//tombstone := createWriteRecord(key,"")
+
+	return nil
+}

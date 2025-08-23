@@ -66,13 +66,13 @@ func main() {
 				fmt.Println("Key not found with error:",err.Error())
 			}
 
-		// case "delete":
-		// 	if len(args) != 2 {
-		// 		fmt.Println("Usage: delete <key>")
-		// 		continue
-		// 	}
-		// 	kv.Delete(args[1])
-		// 	fmt.Printf("Deleted key '%s'\n", args[1])
+		case "delete":
+			if len(args) != 2 {
+				fmt.Println("Usage: delete <key>")
+				continue
+			}
+			kvStore.Delete(args[1])
+			fmt.Printf("Deleted key '%s'\n", args[1])
 
 		case "stop":
 			err = kvStore.ActiveSegment.File.Close()
