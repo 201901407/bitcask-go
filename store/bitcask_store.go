@@ -132,6 +132,83 @@ func createWriteRecord(key string, value string) ([]byte) {
 	return record
 }
 
+func(kvStore *BitcaskKVStore) setKeyInNewSegment(key string,value string) error {
+	timestamp := time.Now().UnixMilli()
+	SegmentName := fmt.Sprintf("bitcask_segment_%d",timestamp)
+	NewSegment, err := os.OpenFile(SegmentName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+	if err != nil || NewSegment == nil {
+		fmt.Println("Error inserting key in Bitcask KV store:",err)
+		return err
+	}
+
+	defer func() {
+		if err != nil {
+			closerr := NewSegment.Close()
+			if closerr != nil {
+				fmt.Errorf("[Rollback] failed to close file handle, Error: %w",err.Error())
+			}
+			rollbackerr := os.Remove(SegmentName)
+			if rollbackerr != nil {
+				fmt.Errorf("[Rollback] Rollback failed, unable to delete the newly created segment. Error: %s",err.Error())
+			}
+		}
+	} ()
+
+	//this is the offset where the record starts so note it
+	SegmentStat, err := NewSegment.Stat()
+	if err != nil || SegmentStat == nil {
+		fmt.Println("Error inserting key in Bitcask KV store:",err)
+		return err
+	}
+
+	currentOffset := SegmentStat.Size()
+
+
+	record := createWriteRecord(key,value)
+
+	_, err = NewSegment.Write(record)
+	if err != nil {
+		fmt.Println("Error inserting key in Bitcask KV store:",err)
+		return err
+	}
+
+	//store the offset and current segmentpath in hash map
+	kvStore.KeysToValPointers[key] = ValueLocation{
+		SegmentPath: SegmentName,
+		Offset: currentOffset,
+	}
+
+	defer func() {
+		if err != nil {
+			delete(kvStore.KeysToValPointers,key)
+		}
+	} ()
+
+	SegmentStat, err = NewSegment.Stat()
+	if err != nil || SegmentStat == nil {
+		fmt.Println("Error inserting key in Bitcask KV store:",err)
+		return err
+	}
+
+	err = kvStore.ActiveSegment.File.Close()
+	if err != nil {
+		fmt.Println("Error inserting key in Bitcask KV store:",err)
+		return err
+	}
+	kvStore.SegmentTracker = append(kvStore.SegmentTracker, kvStore.ActiveSegment)
+
+	currSize := SegmentStat.Size()
+
+	kvStore.ActiveSegment = Segment{
+		File: NewSegment,
+		FilePath: SegmentName,
+		IsFull: false,
+		CurrentFileSize: currSize,
+	}
+
+	fmt.Printf("Successful operation..")
+	return nil
+}
 
 func(kvStore *BitcaskKVStore) Set(key string,value string) error {
 	RecordSize := len(key) + len(value) + 10 //fixed header bytes
@@ -145,87 +222,19 @@ func(kvStore *BitcaskKVStore) Set(key string,value string) error {
 		//close the current segment and open a new one
 		//Written like a transaction
 
-		timestamp := time.Now().UnixMilli()
-		SegmentName := fmt.Sprintf("bitcask_segment_%d",timestamp)
-		NewSegment, err := os.OpenFile(SegmentName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
-		if err != nil || NewSegment == nil {
-			fmt.Println("Error inserting key in Bitcask KV store:",err)
-			return err
-		}
-
-		defer func() {
-			if err != nil {
-				closerr := NewSegment.Close()
-				if closerr != nil {
-					fmt.Errorf("[Rollback] failed to close file handle, Error: %w",err.Error())
-				}
-				rollbackerr := os.Remove(SegmentName)
-				if rollbackerr != nil {
-					fmt.Errorf("[Rollback] Rollback failed, unable to delete the newly created segment. Error: %s",err.Error())
-				}
-			}
-		} ()
-
-		//this is the offset where the record starts so note it
-		SegmentStat, err := NewSegment.Stat()
-		if err != nil || SegmentStat == nil {
-			fmt.Println("Error inserting key in Bitcask KV store:",err)
-			return err
-		}
-
-		currentOffset := SegmentStat.Size()
-
-
-		record := createWriteRecord(key,value)
-
-		_, err = NewSegment.Write(record)
+		err := kvStore.setKeyInNewSegment(key,value)
 		if err != nil {
-			fmt.Println("Error inserting key in Bitcask KV store:",err)
 			return err
 		}
 
-		//store the offset and current segmentpath in hash map
-		kvStore.KeysToValPointers[key] = ValueLocation{
-			SegmentPath: SegmentName,
-			Offset: currentOffset,
-		}
-
-		defer func() {
-			if err != nil {
-				delete(kvStore.KeysToValPointers,key)
-			}
-		} ()
-
-		SegmentStat, err = NewSegment.Stat()
-		if err != nil || SegmentStat == nil {
-			fmt.Println("Error inserting key in Bitcask KV store:",err)
-			return err
-		}
-
-		err = kvStore.ActiveSegment.File.Close()
-		if err != nil {
-			fmt.Println("Error inserting key in Bitcask KV store:",err)
-			return err
-		}
-		kvStore.SegmentTracker = append(kvStore.SegmentTracker, kvStore.ActiveSegment)
-
-		currSize := SegmentStat.Size()
-
-		kvStore.ActiveSegment = Segment{
-			File: NewSegment,
-			FilePath: SegmentName,
-			IsFull: false,
-			CurrentFileSize: currSize,
-		}
-
-		fmt.Printf("Successful Set operation..")
+		fmt.Printf("Successfully set key %s in Bitcask KV store..",key)
 		return nil
 	}
 
 	activeSegment := kvStore.ActiveSegment
 
 	currentOffset := activeSegment.CurrentFileSize
-	print(currentOffset)
+	//print(currentOffset)
 
 	record := createWriteRecord(key,value)
 
@@ -247,10 +256,30 @@ func(kvStore *BitcaskKVStore) Set(key string,value string) error {
 }
 
 func(kvStore *BitcaskKVStore) Delete(key string) error {
+	tombstone := createWriteRecord(key,"")
+	tombstoneSize := len(tombstone)
+	if tombstoneSize + int(kvStore.ActiveSegment.CurrentFileSize) > SEGMENT_SIZE {
+		//close the current segment and open a new one
+		err := kvStore.setKeyInNewSegment(key,"")
+		if err != nil {
+			fmt.Println("Error deleting key in Bitcask KV store:",err)
+			return err
+		}
+
+		delete(kvStore.KeysToValPointers,key)
+
+		fmt.Printf("Successfully deleted key %s from Bitcask KV store..",key)
+		return nil
+	}
+
+	_, err := kvStore.ActiveSegment.File.Write(tombstone)
+	if err != nil {
+		fmt.Println("Error deleting key in Bitcask KV store:",err)
+		return err
+	}
+	kvStore.ActiveSegment.CurrentFileSize += int64(tombstoneSize)
 	delete(kvStore.KeysToValPointers,key)
 
-	//TODO: implement tombstone logic
-	//tombstone := createWriteRecord(key,"")
-
+	fmt.Printf("Successfully deleted key %s from Bitcask KV store..",key)
 	return nil
 }
