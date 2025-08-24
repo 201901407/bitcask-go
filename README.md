@@ -8,11 +8,12 @@ A high-performance, embeddable, **log-structured key-value store** inspired by [
 - ✅ **Idempotent segment loading**
 - ✅ **Support for multiple data segments**
 - ✅ **Efficient point lookups**
+- ✅ **Tombstone creation on key deletion**
 
 ## 🛠 Installation
 
 ```bash
-git clone https://github.com/201901407/bitcask.git
+git clone https://github.com/201901407/bitcask-go.git
 cd bitcask
 go run main.go
 ```
