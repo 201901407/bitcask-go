@@ -13,13 +13,13 @@ func main() {
 	err := kvStore.Init()
 	
 	if err != nil {
-		fmt.Println("Error initializing Bitcask...Quitting...")
+		fmt.Println("Error initializing store...Quitting...")
 		os.Exit(1)
 	}
 
 	reader := bufio.NewReader(os.Stdin)
 
-	fmt.Println("Welcome to Go Implementation of a simple Bitcask KV Store")
+	fmt.Println("Welcome to Bitcask-Go Key-Value Store!")
 	fmt.Println("Commands: set <key> <value> | get <key> | delete <key> | stop")
 	fmt.Println("-------------------------------------------------------------")
 

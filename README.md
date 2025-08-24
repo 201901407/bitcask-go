@@ -20,6 +20,11 @@ A high-performance, embeddable, **log-structured key-value store** inspired by [
 
 ## 🛠 Installation
 
+### Prerequisites
+- Go 1.22.2 or higher
+- Git
+
+### Steps
 ```bash
 git clone https://github.com/201901407/bitcask-go.git
 cd bitcask
@@ -27,10 +32,23 @@ go run main.go
 ```
 
 ## 💾 Usage
-This store supports three operations: 
+
+This store supports the following operations:
+
+| Command                  | Description                              | Example                          |
+|--------------------------|------------------------------------------|----------------------------------|
+| `set <key> <value>`      | Sets a key-value pair in the store       | `set name Alice`                |
+| `get <key>`              | Retrieves the value for a given key      | `get name`                      |
+| `delete <key>`           | Deletes the key-value pair from the store | `delete name`                   |
+| `stop`                   | Gracefully shuts down the store          | `stop`                          |
+
+## 📂 Project Structure
+
 ```
-- set <key> <value>: Sets key -> value in store
-- get <key>: Get value with key <key>
-- delete <key>: Delete value with key <key>
-- stop: Shuts down the store. All previous data is persisted on disk.
+bitcask/
+├── go.mod                # Go module definition
+├── main.go               # Entry point for the application
+├── README.md             # Project documentation
+└── store/
+    └── bitcask_store.go  # Core implementation of the Bitcask KV store
 ```
