@@ -5,9 +5,13 @@ import (
 	"os"
 	"time"
 	"encoding/binary"
+	"strings"
 )
 
-const SEGMENT_SIZE = 64 * 1024 * 1024 //64 MB
+const (
+	SEGMENT_SIZE = 64 * 1024 * 1024 //64 MB
+	SEGMENT_PREFIX = "bitcask_segment_"
+)
 
 type Segment struct {
 	//only for active segment
@@ -41,11 +45,100 @@ type BitcaskKVStore struct {
 	ActiveSegment Segment
 }
 
+func(kvStore *BitcaskKVStore) extractKeysFromSegmentFile(segmentFile *os.File) error {
+    // Get the file size
+    fileStat, err := segmentFile.Stat()
+    if err != nil {
+        return fmt.Errorf("failed to get file stats: %w", err)
+    }
+    fileSize := fileStat.Size()
+
+    // Start reading from the beginning of the file
+    offset := int64(0)
+    for offset < fileSize {
+        // Read the header (10 bytes)
+        header := make([]byte, 10)
+        _, err := segmentFile.ReadAt(header, offset)
+        if err != nil {
+            return fmt.Errorf("failed to read header at offset %d: %w", offset, err)
+        }
+
+        // Parse the header
+        keySize := binary.LittleEndian.Uint16(header[4:6])
+        valueSize := binary.LittleEndian.Uint32(header[6:10])
+
+        // Read the key
+        key := make([]byte, keySize)
+        _, err = segmentFile.ReadAt(key, offset+10)
+        if err != nil {
+            return fmt.Errorf("failed to read key at offset %d: %w", offset+10, err)
+        }
+
+        if valueSize == 0 {
+			//tombstone record, delete the key from map if it exists
+			delete(kvStore.KeysToValPointers,string(key))
+		} else {
+			// Store the key and its location
+			kvStore.KeysToValPointers[string(key)] = ValueLocation{
+				SegmentPath: segmentFile.Name(),
+				Offset: offset,
+			}
+		}
+
+        // Move to the next record (header + key + value)
+        offset += 10 + int64(keySize) + int64(valueSize)
+    }
+
+    return nil
+}
+
 func(kvStore *BitcaskKVStore) Init() error {
 	//initialize the Bitcask KV Store
 	kvStore.KeysToValPointers = make(map[string]ValueLocation)
 	kvStore.SegmentTracker = []Segment{}
 
+	//search for existing segments and load them
+	//list all files in current directory
+	allFiles, err := os.ReadDir(".")
+	if err != nil {
+		fmt.Println("Error initlializing Bitcask KV Store:",err)
+		return err
+	}
+
+	//filter files with segment prefix
+	for _, file := range allFiles {
+		if !file.IsDir() && strings.HasPrefix(file.Name(), SEGMENT_PREFIX) {
+			//load this segment
+			SegmentFile, err := os.OpenFile(file.Name(), os.O_RDWR, 0644)
+			if err != nil {
+				fmt.Println("Error initlializing Bitcask KV Store:",err)
+				return err
+			}
+
+			//construct the in-memory hash map from this segment
+			err = kvStore.extractKeysFromSegmentFile(SegmentFile)
+			if err != nil {
+				return fmt.Errorf("error loading keys from segment file %s: %w", file.Name(), err)
+			}
+
+			SegmentStat, err := SegmentFile.Stat()
+			if err != nil {
+				fmt.Println("Error initlializing Bitcask KV Store:",err)
+				return err
+			}
+
+			kvStore.SegmentTracker = append(kvStore.SegmentTracker, Segment{
+				File: SegmentFile,
+				FilePath: file.Name(),
+				IsFull: true,
+				CurrentFileSize: SegmentStat.Size(),
+			})
+
+			SegmentFile.Close()
+		}
+	}
+
+	//open a new active segment
 	timestamp := time.Now().UnixMilli()
 	SegmentName := fmt.Sprintf("bitcask_segment_%d",timestamp)
 	NewSegment, err := os.OpenFile(SegmentName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
@@ -256,6 +349,10 @@ func(kvStore *BitcaskKVStore) Set(key string,value string) error {
 }
 
 func(kvStore *BitcaskKVStore) Delete(key string) error {
+	if _, ok := kvStore.KeysToValPointers[key]; !ok {
+		return fmt.Errorf("Key %s not found in Bitcask KV store..",key)
+	}
+
 	tombstone := createWriteRecord(key,"")
 	tombstoneSize := len(tombstone)
 	if tombstoneSize + int(kvStore.ActiveSegment.CurrentFileSize) > SEGMENT_SIZE {
