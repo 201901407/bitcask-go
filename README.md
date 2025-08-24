@@ -1,4 +1,4 @@
-# Bitcask KV Store (Go Implementation)
+# Bitcask-Go
 
 A high-performance, embeddable, **log-structured key-value store** inspired by [Bitcask](https://riak.com/assets/bitcask-intro.pdf). This project is written in Go and emphasizes simplicity, speed, and crash resilience.
 
