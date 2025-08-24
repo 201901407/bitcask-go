@@ -68,10 +68,14 @@ func main() {
 
 		case "delete":
 			if len(args) != 2 {
-				fmt.Println("Usage: delete <key>")
+				fmt.Println("Incorrect usage of delete. Correct Usage: delete <key>")
 				continue
 			}
-			kvStore.Delete(args[1])
+			err = kvStore.Delete(args[1])
+			if err != nil {
+				fmt.Printf("Error deleting key, error: %s\n", err.Error())
+				continue
+			}
 			fmt.Printf("Deleted key '%s'\n", args[1])
 
 		case "stop":
@@ -84,7 +88,7 @@ func main() {
 			return
 
 		default:
-			fmt.Println("Unknown command. Available commands: set, get, stop")
+			fmt.Println("Unknown command. Available commands: set, get, delete, stop")
 		}
 	}
 }
