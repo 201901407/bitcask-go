@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"github.com/201901407/bitcask/store"
+
+	bitcask "github.com/201901407/bitcask/store"
 )
 
 func main() {
 	kvStore := bitcask.BitcaskKVStore{}
 	err := kvStore.Init()
-	
+
 	if err != nil {
 		fmt.Println("Error initializing store...Quitting...")
 		os.Exit(1)
@@ -46,9 +47,9 @@ func main() {
 				continue
 			}
 			//set function
-			err = kvStore.Set(args[1],args[2])
+			err = kvStore.Set(args[1], args[2])
 			if err != nil {
-				fmt.Printf("Error setting key, error:",err.Error())
+				fmt.Printf("Error setting key: %s\n", err.Error())
 				continue
 			}
 			fmt.Printf("Set key '%s' to '%s'\n", args[1], args[2])
@@ -63,7 +64,7 @@ func main() {
 			if err == nil {
 				fmt.Printf("Value: %s\n", value)
 			} else {
-				fmt.Println("Key not found with error:",err.Error())
+				fmt.Println("Key not found with error:", err.Error())
 			}
 
 		case "delete":

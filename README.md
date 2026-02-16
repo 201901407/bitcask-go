@@ -11,6 +11,16 @@ A high-performance, embeddable, **log-structured key-value store** inspired by [
 - ✅ **Tombstone creation on key deletion**
 - ✅ **Crash resilient**
 
+## Benchmarks
+Collected against running benchmarks defined in tests/bench_test.go file on 8-core CPU
+| Metric | Operations | Throughput | Notes |
+|--------|-----------|-----------|-------|
+| Sequential Writes | 102667 | 700K writes/sec | Baseline test |
+| Random Writes | 155,887 | 800K writes/sec |  |
+| Sequential Reads | 148377 | 124K ops/sec | Baseline test |
+| Random Reads | 105223 | 100K ops/sec |  |
+| Mixed Workload (70% R + 30% W) | 116898 | 86K ops/sec | Real world scenario
+
 ## 🧠 How It Works
 
 - Data is stored in **segment files** on disk in a serialized binary format.
