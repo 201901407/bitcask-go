@@ -12,14 +12,15 @@ A high-performance, embeddable, **log-structured key-value store** inspired by [
 - ✅ **Crash resilient**
 
 ## Benchmarks
-Collected against running benchmarks defined in tests/bench_test.go file on 8-core CPU
+Collected against running benchmarks defined in tests/bench_test.go file on 8-core CPU and 16GB unified memory
 | Metric | Operations | Throughput | Notes |
 |--------|-----------|-----------|-------|
-| Sequential Writes | 102667 | 700K writes/sec | Baseline test |
-| Random Writes | 155,887 | 800K writes/sec |  |
-| Sequential Reads | 148377 | 124K ops/sec | Baseline test |
-| Random Reads | 105223 | 100K ops/sec |  |
-| Mixed Workload (70% R + 30% W) | 116898 | 86K ops/sec | Real world scenario
+| Sequential Writes | 422780 | 364K writes/sec | Baseline test |
+| Random Writes | 402643 | 321K writes/sec |  |
+| Sequential Reads | 1259307 | 1177K ops/sec | Baseline test |
+| Random Reads | 1210428 | 1000K ops/sec |  |
+| Mixed Workload (70% R + 30% W) | 516225 | 336K ops/sec | Real world scenario
+| Compaction | 15 | 77ms/op | Compaction benchmark 
 
 ## 🧠 How It Works
 

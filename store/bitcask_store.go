@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,11 +13,11 @@ import (
 )
 
 const (
-	SEGMENT_SIZE         = 64 * 1024 * 1024 //64 MB
+	SEGMENT_SIZE         = 64 * 1024 * 1024 	//64 MB
 	SEGMENT_PREFIX       = "bitcask_segment_"
-	COMPACTION_INTERVAL  = 30 * time.Second //trigger compaction every 30 seconds
-	COMPACTION_THRESHOLD = 5                //compact when there are 5+ segments
-	DEFAULT_DIR          = "."              //default directory to store segment files
+	COMPACTION_INTERVAL  = 30 * time.Second 	//trigger compaction every 30 seconds
+	COMPACTION_THRESHOLD = 5                	//compact when there are 5+ segments
+	DEFAULT_DIR          = "./data"              //default directory to store segment files
 )
 
 type Segment struct {
@@ -52,7 +53,9 @@ type BitcaskKVStore struct {
 	//mutex to protect concurrent access
 	mu sync.RWMutex
 	//flag to stop compaction goroutine
-	stopCompaction chan bool
+	stopCompaction chan struct{}
+	//channel closed when the compaction goroutine has fully exited
+	compactionDone chan struct{}
 	//flag to track if compaction is running
 	isCompacting bool
 	//all valid segments file handle pool
@@ -124,14 +127,14 @@ func listSortedSegmentFiles(dir string) ([]string, error) {
 		}
 		name := e.Name()
 		if strings.HasPrefix(name, SEGMENT_PREFIX) {
-			names = append(names, name)
+			names = append(names, filepath.Join(dir, name))
 		}
 	}
 
 	// sort in-place by parsing timestamp suffix; fallback to lexical order on parse error
 	sort.Slice(names, func(i, j int) bool {
-		tsi := strings.TrimPrefix(names[i], SEGMENT_PREFIX)
-		tsj := strings.TrimPrefix(names[j], SEGMENT_PREFIX)
+		tsi := strings.TrimPrefix(filepath.Base(names[i]), SEGMENT_PREFIX)
+		tsj := strings.TrimPrefix(filepath.Base(names[j]), SEGMENT_PREFIX)
 		vi, erri := strconv.ParseInt(tsi, 10, 64)
 		vj, errj := strconv.ParseInt(tsj, 10, 64)
 		if erri == nil && errj == nil {
@@ -155,9 +158,13 @@ func (kvStore *BitcaskKVStore) Init() error {
 	kvStore.SegmentTracker = []Segment{}
 	kvStore.segmentFileHandles = make(map[string]*os.File)
 
+	// ensure the data directory exists before reading or writing any segment files
+	if err := os.MkdirAll(DEFAULT_DIR, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory %s: %w", DEFAULT_DIR, err)
+	}
+
 	// search for existing segments in the specfied directory
 	// and load them in creation order
-	// currently, the default directory is the current working directory
 	segFiles, err := listSortedSegmentFiles(DEFAULT_DIR)
 	if err != nil {
 		fmt.Println("Error initializing Bitcask KV Store:", err)
@@ -195,7 +202,7 @@ func (kvStore *BitcaskKVStore) Init() error {
 
 	//open a new active segment
 	timestamp := time.Now().UnixMilli()
-	SegmentName := fmt.Sprintf("bitcask_segment_%d", timestamp)
+	SegmentName := filepath.Join(DEFAULT_DIR, fmt.Sprintf("bitcask_segment_%d", timestamp))
 	NewSegment, err := os.OpenFile(SegmentName, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
 		fmt.Println("Error initlializing Bitcask KV Store:", err)
@@ -222,19 +229,20 @@ func (kvStore *BitcaskKVStore) Init() error {
 }
 
 func (kvStore *BitcaskKVStore) Get(key string) (string, error) {
+	// Read both the key location and the file handle under a single lock to
+	// avoid a race where compaction deletes the segment between the two reads.
 	kvStore.mu.RLock()
 	RecordOffset, ok := kvStore.KeysToValPointers[key]
+	var readDescriptor *os.File
+	var exists bool
+	if ok {
+		readDescriptor, exists = kvStore.segmentFileHandles[RecordOffset.SegmentPath]
+	}
 	kvStore.mu.RUnlock()
 
 	if !ok {
-		fmt.Println("Error in fetching key from Bitcask KV Store")
 		return "", fmt.Errorf("error in fetching key %s from Bitcask KV Store", key)
 	}
-
-	//try to get file descriptor from pool, fallback to opening if not found
-	kvStore.mu.RLock()
-	readDescriptor, exists := kvStore.segmentFileHandles[RecordOffset.SegmentPath]
-	kvStore.mu.RUnlock()
 
 	var shouldClose bool
 	if !exists {
@@ -303,7 +311,7 @@ func createWriteRecord(key string, value string) []byte {
 
 func (kvStore *BitcaskKVStore) setKeyInNewSegment(key string, value string) error {
 	timestamp := time.Now().UnixMilli()
-	SegmentName := fmt.Sprintf("bitcask_segment_%d", timestamp)
+	SegmentName := filepath.Join(DEFAULT_DIR, fmt.Sprintf("bitcask_segment_%d", timestamp))
 	NewSegment, err := os.OpenFile(SegmentName, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil || NewSegment == nil {
 		fmt.Println("Error inserting key in Bitcask KV store:", err)
@@ -314,11 +322,11 @@ func (kvStore *BitcaskKVStore) setKeyInNewSegment(key string, value string) erro
 		if err != nil {
 			closerr := NewSegment.Close()
 			if closerr != nil {
-				fmt.Errorf("[Rollback] failed to close file handle, Error: %w", err.Error())
+				fmt.Printf("[Rollback] failed to close file handle, Error: %v\n", closerr)
 			}
 			rollbackerr := os.Remove(SegmentName)
 			if rollbackerr != nil {
-				fmt.Errorf("[Rollback] Rollback failed, unable to delete the newly created segment. Error: %s", err.Error())
+				fmt.Printf("[Rollback] Rollback failed, unable to delete the newly created segment. Error: %v\n", rollbackerr)
 			}
 		}
 	}()
@@ -340,17 +348,18 @@ func (kvStore *BitcaskKVStore) setKeyInNewSegment(key string, value string) erro
 		return err
 	}
 
-	//store the offset and current segmentpath in hash map
-	kvStore.KeysToValPointers[key] = ValueLocation{
-		SegmentPath: SegmentName,
-		Offset:      currentOffset,
-	}
-
-	defer func() {
-		if err != nil {
-			delete(kvStore.KeysToValPointers, key)
+	// Only update the index for non-tombstone records; tombstones are handled by the caller.
+	if value != "" {
+		kvStore.KeysToValPointers[key] = ValueLocation{
+			SegmentPath: SegmentName,
+			Offset:      currentOffset,
 		}
-	}()
+		defer func() {
+			if err != nil {
+				delete(kvStore.KeysToValPointers, key)
+			}
+		}()
+	}
 
 	SegmentStat, err = NewSegment.Stat()
 	if err != nil || SegmentStat == nil {
@@ -358,14 +367,9 @@ func (kvStore *BitcaskKVStore) setKeyInNewSegment(key string, value string) erro
 		return err
 	}
 
-	if kvStore.ActiveSegment.File != nil {
-		err = kvStore.ActiveSegment.File.Close()
-		if err != nil {
-			fmt.Println("Error inserting key in Bitcask KV store:", err)
-			return err
-		}
-	}
-
+	// Do NOT close the old active segment's file handle here.
+	// It stays in segmentFileHandles so reads to keys in that segment remain valid.
+	// Compaction is responsible for closing and removing old segment files.
 	kvStore.SegmentTracker = append(kvStore.SegmentTracker, kvStore.ActiveSegment)
 
 	currSize := SegmentStat.Size()
@@ -470,22 +474,25 @@ func (kvStore *BitcaskKVStore) Delete(key string) error {
 
 // StartCompactionBackground starts the async compaction goroutine
 func (kvStore *BitcaskKVStore) StartCompactionBackground() {
-	kvStore.stopCompaction = make(chan bool)
+	kvStore.stopCompaction = make(chan struct{})
+	kvStore.compactionDone = make(chan struct{})
 	go kvStore.compactionLoop()
 	fmt.Println("Compaction background process started")
 }
 
-// StopCompactionBackground stops the async compaction goroutine
+// StopCompactionBackground stops the async compaction goroutine and waits for it to exit.
 func (kvStore *BitcaskKVStore) StopCompactionBackground() {
 	if kvStore.stopCompaction != nil {
-		kvStore.stopCompaction <- true
-		close(kvStore.stopCompaction)
+		close(kvStore.stopCompaction) // signal via close so the goroutine unblocks regardless of state
+		<-kvStore.compactionDone     // block until the goroutine has fully exited
+		kvStore.stopCompaction = nil
 	}
 	fmt.Println("Compaction background process stopped")
 }
 
 // compactionLoop runs periodically to trigger compaction
 func (kvStore *BitcaskKVStore) compactionLoop() {
+	defer close(kvStore.compactionDone) // signal callers of StopCompactionBackground that we have exited
 	ticker := time.NewTicker(COMPACTION_INTERVAL)
 	defer ticker.Stop()
 
@@ -545,7 +552,8 @@ func (kvStore *BitcaskKVStore) Compact() error {
 
 	fmt.Printf("Starting compaction of %d segments...\n", len(segmentsToCompact))
 
-	// Identify keys that need to be compacted (those that point to the segments being compacted)
+	// Identify keys that need to be compacted (those that point to the segments being compacted).
+	// Also snapshot the file handles for those segments so we hold a safe copy after releasing the lock.
 	kvStore.mu.RLock()
 	keysToCompact := make(map[string]ValueLocation)
 	for key, loc := range kvStore.KeysToValPointers {
@@ -553,7 +561,14 @@ func (kvStore *BitcaskKVStore) Compact() error {
 			keysToCompact[key] = loc
 		}
 	}
-	openFileHandles := kvStore.segmentFileHandles
+	// Copy only the handles we need — copying the map reference would expose us to
+	// concurrent mutations after the lock is released.
+	openFileHandles := make(map[string]*os.File, len(closedSegmentPaths))
+	for path := range closedSegmentPaths {
+		if fh, ok := kvStore.segmentFileHandles[path]; ok {
+			openFileHandles[path] = fh
+		}
+	}
 	kvStore.mu.RUnlock()
 
 	if len(keysToCompact) == 0 {
@@ -566,7 +581,7 @@ func (kvStore *BitcaskKVStore) Compact() error {
 
 	createNewCompacted := func() (*os.File, string, error) {
 		timestamp := time.Now().UnixMilli()
-		name := fmt.Sprintf("%s%d", compactedBase, timestamp)
+		name := filepath.Join(DEFAULT_DIR, fmt.Sprintf("%s%d", compactedBase, timestamp))
 		f, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 		return f, name, err
 	}
@@ -584,6 +599,15 @@ func (kvStore *BitcaskKVStore) Compact() error {
 	curOffset := int64(0)
 	newIndex := make(map[string]ValueLocation)
 
+	// Track files opened as a fallback so we can close them when done,
+	// rather than using defer inside the loop (which would keep them open until Compact returns).
+	fallbackFiles := make([]*os.File, 0)
+	defer func() {
+		for _, f := range fallbackFiles {
+			f.Close()
+		}
+	}()
+
 	for key, oldLoc := range keysToCompact {
 		file := openFileHandles[oldLoc.SegmentPath]
 		if file == nil {
@@ -592,7 +616,7 @@ func (kvStore *BitcaskKVStore) Compact() error {
 			if err != nil {
 				return fmt.Errorf("failed to open source segment %s: %w", oldLoc.SegmentPath, err)
 			}
-			defer file.Close()
+			fallbackFiles = append(fallbackFiles, file)
 		}
 
 		header := make([]byte, 10)
